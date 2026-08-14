@@ -1,0 +1,45 @@
+# ────────────── Download Organizer .gitignore ──────────────
+
+# ============ Python 缓存 ============
+__pycache__/
+*.py[cod]
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+
+# ============ 编译产物（可由 launcher.bat 重新生成） ============
+launcher.exe
+
+# ============ 运行日志（整理目标目录内生成） ============
+.organizer_logs/
+
+# ============ Windows 系统文件 ============
+desktop.ini
+Thumbs.db
+$RECYCLE.BIN/
+
+# ============ 临时文件 ============
+*.log
+*.tmp
+*.bak
+*.swp
+*~
+
+# ============ 编辑器 / IDE ============
+.vscode/
+.idea/
+*.sublime-*
+
+# ============ 虚拟环境 ============
+venv/
+.venv/
+env/
+ENV/
+
+# ============ 报告输出（如需入库请删除以下规则） ============
+# 工具导出的报告默认放本地，不入版本库
+report_*.json
+report_*.csv
+report_*.md

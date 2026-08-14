@@ -1,0 +1,27 @@
+# Download Organizer - 运行依赖
+# 核心功能仅使用 Python 标准库，无需 pip 安装任何第三方包。
+
+# ---- 运行时环境要求 ----
+# Python >= 3.8
+# 操作系统: Windows / macOS / Linux（GUI 需 tkinter；安卓功能需 Windows 或可运行 adb 的环境）
+# 权限: 整理目标目录的读写权限（手机功能需 USB 调试授权）
+
+# ---- 核心标准库（随 Python 自带） ----
+# tkinter          GUI 界面（官方 python.org 安装包默认包含；Linux 需 python3-tk）
+# pathlib / os     路径与文件操作
+# shutil / hashlib 文件移动与 MD5 查重
+# re / json / csv  规则匹配与报告导出
+# subprocess       ADB 命令调用（安卓功能）
+# asyncio          ADB 异步封装（安卓功能）
+# argparse         CLI 参数解析
+
+# ---- 可选依赖（不安装则自动降级，不影响核心功能） ----
+Pillow>=8.0 ; sys_platform == 'win32'
+#  用途: 图片 EXIF 检测（区分手机拍摄照片/网图/截图，用于相册分类与日期提取）
+#  未安装时: recognizer 检测到 Pillow 缺失会自动跳过 EXIF，仅影响相册分类精度
+
+# ---- 外部程序（非 pip 包，安卓功能必需） ----
+# Android Platform Tools (adb.exe)
+#   下载: https://developer.android.com/studio/releases/platform-tools
+#   要求: adb.exe 所在目录加入系统 PATH；手机开启「开发者模式 + USB 调试」
+#   未安装时: 手机相关命令（phone devices / organize / backup 等）会提示安装指引

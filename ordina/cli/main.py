@@ -37,6 +37,8 @@ from ..core import (
     Reporter,
     DATE_SUFFIX_FORMAT,
 )
+# 安卓相关异常类型（phone 子命令统一捕获后输出友好提示）
+from ..android import AdbError
 
 
 def build_naming_rules(args) -> NamingRules:
@@ -260,7 +262,7 @@ def cmd_version(args):
 
 def _get_phone_organizer(args):
     """获取 PhoneOrganizer 实例"""
-    from android import AdbBridge, PhoneOrganizer
+    from ..android import AdbBridge, PhoneOrganizer
     bridge = AdbBridge()
     bridge.select_device()
     mode = getattr(args, "mode", "purpose")
@@ -269,7 +271,7 @@ def _get_phone_organizer(args):
 
 def cmd_phone_devices(args):
     """列出手机设备"""
-    from android import AdbBridge
+    from ..android import AdbBridge
     bridge = AdbBridge()
 
     print("\n📱 正在检测安卓设备...\n")
@@ -308,7 +310,7 @@ def cmd_phone_devices(args):
 
 def cmd_phone_info(args):
     """查看手机设备信息和存储概况"""
-    from android import AdbBridge, PhoneOrganizer
+    from ..android import AdbBridge, PhoneOrganizer
     bridge = AdbBridge()
     bridge.select_device()
 
@@ -437,7 +439,7 @@ def cmd_phone_backup(args):
 
 def cmd_phone_scan(args):
     """扫描手机文件"""
-    from android import AdbBridge, PhoneScanner
+    from ..android import AdbBridge, PhoneScanner
     bridge = AdbBridge()
     bridge.select_device()
     scanner = PhoneScanner(bridge)
@@ -546,7 +548,7 @@ def cmd_phone_diagnose(args):
 
 def cmd_phone_reconnect(args):
     """重新连接 USB 设备"""
-    from android import AdbBridge
+    from ..android import AdbBridge
     bridge = AdbBridge()
 
     print("\n🔄 重新连接 USB 设备...")
@@ -766,7 +768,17 @@ def main(argv=None):
 
     if args.command == "phone":
         if hasattr(args, "phone_command") and args.phone_command in phone_commands:
-            phone_commands[args.phone_command](args)
+            try:
+                phone_commands[args.phone_command](args)
+            except AdbError as exc:
+                # 安卓相关异常统一收敛为友好提示，而不是把 traceback 丢给用户
+                print(f"\n[错误] {exc}")
+                print("\n[提示] 安卓功能需要 ADB（Android Platform Tools）:")
+                print("  1. 下载并解压 platform-tools")
+                print("  2. 把目录加入 PATH，或把 adb.exe 放到项目目录")
+                print("  3. 手机开启「开发者选项 → USB 调试」并授权本机")
+                print("\n  验证: adb devices")
+                sys.exit(1)
         else:
             phone_parser.print_help()
     elif args.command in commands:

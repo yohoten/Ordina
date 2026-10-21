@@ -416,7 +416,7 @@ class PhoneOrganizer:
     def _run_pc_organizer(self, target_dir: Path):
         """对本地目录运行 PC 端文件整理"""
         try:
-            from organizer import FileOrganizer
+            from ..core import FileOrganizer
             pc_organizer = FileOrganizer(
                 download_folder=target_dir,
                 mode=self.mode,

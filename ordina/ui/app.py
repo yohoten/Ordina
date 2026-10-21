@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -20,8 +21,30 @@ from .theme import FONTS, ThemeManager
 from .widgets import SegmentedControl, button, label, status_label
 from .tabs import TAB_CLASSES
 
+def _resource_path(relative: str) -> Path:
+    """定位随包资源（图标等）
+
+    同时兼容三种运行方式：
+    1. 源码运行      → 仓库根的 assets/
+    2. PyInstaller onefile → sys._MEIPASS 临时解压目录
+    3. PyInstaller onedir  → 可执行文件同级的 assets/
+    """
+    candidates = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / relative)
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / relative)
+    candidates.append(Path(__file__).resolve().parents[2] / relative)
+
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[-1]
+
+
 CONFIG_PATH = Path.home() / ".ordina.json"
-ICON_PATH = Path(__file__).resolve().parents[2] / "assets" / "icon.ico"
+ICON_PATH = _resource_path("assets/icon.ico")
 
 SHORTCUT_HINT = "Ctrl+O 打开  |  Ctrl+P 预览  |  Ctrl+Enter 执行  |  F5 刷新  |  Ctrl+T 主题"
 

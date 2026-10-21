@@ -136,12 +136,14 @@ class PurposeClassifier(BaseClassifier):
         # 1. 关键词匹配（权重 40%）— 只匹配文件名主干，避免扩展名污染
         for keyword, category in self.keywords.items():
             kw_lower = keyword.lower()
-            # 跳过太短的关键词（<3字符容易误匹配）
-            if len(kw_lower) < 3:
+            # 长度门槛：中文词信息密度高，2 字即足够（报告/合同/周报/发票…）；
+            # 拉丁词至少 3 字符，否则容易出现 "os"、"in" 之类的误匹配。
+            # 旧实现统一用 len < 3 过滤，导致全部双字中文关键词失效。
+            if len(kw_lower) < (2 if self._has_cjk(kw_lower) else 3):
                 continue
             if kw_lower in stem.lower():
                 scores[category] = scores.get(category, 0) + 0.4
-                break  # 一个文件只计一次最高优先级关键词命中
+                break  # 命中即停：一个文件只取首个命中的关键词
 
         # 2. 正则模式匹配（权重 25%）
         for cat, patterns in self._compiled_patterns.items():
@@ -171,6 +173,11 @@ class PurposeClassifier(BaseClassifier):
         best_category = self._select_best(scores, filename)
 
         return best_category
+
+    @staticmethod
+    def _has_cjk(text: str) -> bool:
+        """判断是否包含中日韩统一表意文字（用于区分中英文关键词的长度门槛）"""
+        return any("\u4e00" <= ch <= "\u9fff" for ch in text)
 
     def _select_best(self, scores: Dict[str, float], filename: str) -> str:
         """根据得分和优先级选择最佳分类"""

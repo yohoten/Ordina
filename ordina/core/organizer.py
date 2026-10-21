@@ -5,27 +5,20 @@
 
 import hashlib
 import logging
-import os
-import sys
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 from typing import Optional, Dict, List, Tuple, Union
 
-# 确保当前目录在 Python 路径中
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
-
-from classifiers import (
+from .classifiers import (
     BaseClassifier,
     ExtensionClassifier,
     PurposeClassifier,
     create_classifier,
 )
-from recognizer import SmartRecognizer
-from normalizer import NameNormalizer
-from archiver import ArchiveManager
+from .recognizer import SmartRecognizer
+from .naming import NameNormalizer, NamingRules
+from .archiver import ArchiveManager
 
 logger = logging.getLogger(__name__)
 
@@ -46,16 +39,21 @@ class FileOrganizer:
                  download_folder: Union[str, Path],
                  mode: str = "purpose",
                  custom_rules: Optional[Dict] = None,
-                 classifier: Optional[BaseClassifier] = None):
+                 classifier: Optional[BaseClassifier] = None,
+                 naming_rules: Optional[NamingRules] = None,
+                 verbose: bool = True):
         """
         Args:
             download_folder: 目标文件夹
             mode: 分类模式 "extension" | "purpose"
             custom_rules: 自定义分类规则
             classifier: 预构建的分类器实例
+            naming_rules: 命名规则（模板 / 日期来源 / 清洗策略）
+            verbose: 是否向 stdout 打印进度
         """
         self.download_folder = Path(download_folder)
         self.mode = mode
+        self.verbose = verbose
 
         # 分类器
         if classifier is not None:
@@ -65,11 +63,11 @@ class FileOrganizer:
 
         # 辅助模块
         self.recognizer = SmartRecognizer()
-        self.normalizer = NameNormalizer()
+        self.normalizer = NameNormalizer(rules=naming_rules or NamingRules())
         self.archiver = ArchiveManager()
 
         # 日志
-        self.log_dir = self.download_folder / ".organizer_logs"
+        self.log_dir = self.download_folder / ".ordina_logs"
         self.log_dir.mkdir(exist_ok=True)
         self._setup_logging()
 
@@ -128,26 +126,31 @@ class FileOrganizer:
             logger.error(f"MD5 计算失败: {file_path} - {e}")
             return None
 
-    def find_duplicates(self) -> List[Dict]:
-        """查找重复文件（基于文件大小+MD5）"""
-        size_map = defaultdict(list)
+    def find_duplicates(self, files: Optional[List[Path]] = None) -> List[Dict]:
+        """查找重复文件（基于文件大小+MD5）
 
-        # 按大小分组
-        for file_path in self.download_folder.iterdir():
-            if file_path.is_file() and not file_path.name.startswith('.'):
-                try:
-                    size = file_path.stat().st_size
-                    size_map[size].append(file_path)
-                except Exception as e:
-                    logger.error(f"读取失败: {file_path} - {e}")
+        Args:
+            files: 指定候选文件；为空则扫描整个目标目录
+        """
+        if files is None:
+            files = [f for f in self.download_folder.iterdir()
+                     if f.is_file() and not f.name.startswith('.')]
+
+        size_map = defaultdict(list)
+        for file_path in files:
+            try:
+                size = file_path.stat().st_size
+                size_map[size].append(file_path)
+            except Exception as e:
+                logger.error(f"读取失败: {file_path} - {e}")
 
         duplicates = []
-        for size, files in size_map.items():
-            if len(files) < 2:
+        for size, group in size_map.items():
+            if len(group) < 2:
                 continue
 
             hash_map = defaultdict(list)
-            for fp in files:
+            for fp in group:
                 md5 = self.calculate_md5(fp)
                 if md5:
                     hash_map[md5].append(fp)
@@ -171,41 +174,51 @@ class FileOrganizer:
                  dry_run: bool = True,
                  use_date_grouping: bool = False,
                  add_date_suffix: bool = False,
-                 use_number_prefix: bool = True) -> Tuple[List, List]:
+                 use_number_prefix: bool = True,
+                 verbose: Optional[bool] = None,
+                 only_names: Optional[set] = None) -> Tuple[List, List]:
         """
         执行文件整理
 
         Args:
             dry_run: 预览模式（不实际操作）
             use_date_grouping: 按日期分组到子目录
-            add_date_suffix: 文件添加日期后缀
+            add_date_suffix: 文件按命名模板改写（默认追加日期后缀）
             use_number_prefix: 分类文件夹使用数字前缀
+            verbose: 覆盖实例的打印开关（GUI 线程中建议 False）
+            only_names: 只处理这些文件名的文件（GUI 勾选生效的关键）
 
         Returns:
             (moved_files, duplicates)
         """
+        verbose = self.verbose if verbose is None else verbose
+        emit = print if verbose else (lambda *a, **k: None)
+
         self.stats = self._init_stats()
         moved_files = []
 
-        print(f"\n{'=' * 60}")
-        print(f"[Organize] {self.download_folder}")
-        print(f"   Mode: {'Purpose' if self.mode == 'purpose' else 'Extension'}")
-        print(f"   Action: {'DRY-RUN' if dry_run else 'EXECUTE'}")
-        print(f"{'=' * 60}\n")
+        emit(f"\n{'=' * 60}")
+        emit(f"[整理] {self.download_folder}")
+        emit(f"   分类模式: {'用途' if self.mode == 'purpose' else '扩展名'}")
+        emit(f"   执行动作: {'预览 (dry-run)' if dry_run else '实际执行'}")
+        emit(f"   命名规则: {self.normalizer.rules.summary()}")
+        emit(f"{'=' * 60}\n")
 
-        # 第一步：查重
-        print("[Step 1] Checking for duplicate files...")
-        duplicates = self.find_duplicates()
-        if duplicates:
-            dup_report = self._format_duplicates(duplicates, brief=True)
-            print(dup_report)
-        else:
-            print("   [OK] No duplicates found.\n")
-
-        # 第二步：收集并分类所有文件
+        # 第一步：收集待处理文件（支持只处理勾选项）
         all_files = [f for f in self.download_folder.iterdir()
                      if f.is_file() and not f.name.startswith('.')]
+        if only_names is not None:
+            all_files = [f for f in all_files if f.name in only_names]
 
+        # 第二步：查重 + 分类
+        emit("[1/3] 检查重复文件...")
+        duplicates = self.find_duplicates(all_files)
+        if duplicates:
+            emit(self._format_duplicates(duplicates, brief=True))
+        else:
+            emit("   [OK] 未发现重复文件\n")
+
+        emit("[2/3] 分类文件...")
         categories_found: Dict[str, List[Path]] = defaultdict(list)
         for fp in all_files:
             self.stats["processed"] += 1
@@ -219,6 +232,7 @@ class FileOrganizer:
             category_names.remove("08_存档资料")
             category_names.append("08_存档资料")
 
+        emit("[3/3] 移动文件...")
         for cat in category_names:
             files = categories_found[cat]
             if not files:
@@ -237,7 +251,7 @@ class FileOrganizer:
 
             target_dir = self.download_folder / target_dir_name
 
-            print(f"\n[Category] {target_dir_name} ({len(files)} files):")
+            emit(f"\n[分类] {target_dir_name}（{len(files)} 个文件）:")
 
             for fp in files:
                 try:
@@ -248,17 +262,15 @@ class FileOrganizer:
                     else:
                         final_dir = target_dir
 
-                    # 日期后缀
+                    # 按命名规则改写文件名（日期后缀 / 模板 / 安全清洗）
                     final_name = fp.name
-                    if add_date_suffix and self.normalizer.should_add_date_suffix(fp):
-                        final_name = self.normalizer.add_date_suffix(fp)
+                    if add_date_suffix:
+                        final_name = self.normalizer.add_date_suffix(fp, category=cat)
 
-                    # 冲突处理
+                    # 冲突处理：语义化 _v2 / _v3
                     target_path = final_dir / final_name
-                    if target_path.exists() and target_path != fp:
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        new_stem = f"{Path(final_name).stem}_{timestamp}{Path(final_name).suffix}"
-                        target_path = final_dir / new_stem
+                    if target_path != fp:
+                        target_path = self.normalizer.resolve_conflict(target_path)
 
                     if not dry_run:
                         final_dir.mkdir(parents=True, exist_ok=True)
@@ -267,15 +279,15 @@ class FileOrganizer:
 
                     self.stats["moved"] += 1
                     moved_files.append((fp.name, str(target_path.relative_to(self.download_folder))))
-                    print(f"   [OK] {fp.name}")
+                    emit(f"   [OK] {fp.name}")
 
                 except Exception as e:
                     self.stats["errors"] += 1
                     logger.error(f"处理失败: {fp.name} - {e}")
-                    print(f"   [ERR] {fp.name}: {e}")
+                    emit(f"   [ERR] {fp.name}: {e}")
 
         # 打印统计
-        self._print_stats(dry_run)
+        self._print_stats(dry_run, verbose=verbose)
         return moved_files, duplicates
 
     # ── 清理 ────────────────────────────────────────────────────
@@ -287,13 +299,17 @@ class FileOrganizer:
         Returns:
             清理结果统计
         """
-        print(f"\n[Cleanup] 清理模式: {self.download_folder}")
-        print(f"   操作模式: {'预览' if dry_run else '执行'}\n")
+        if self.verbose:
+            print(f"\n[清理] 目录: {self.download_folder}")
+            print(f"   操作模式: {'预览' if dry_run else '执行'}\n")
 
         result = {
             "temp_files": self.archiver.clean_temp_files(self.download_folder, dry_run=dry_run),
             "empty_dirs": self.archiver.remove_empty_dirs(self.download_folder, dry_run=dry_run),
         }
+
+        if not self.verbose:
+            return result
 
         print(f"   临时文件: {len(result['temp_files'])} 个")
         print(f"   空目录:   {len(result['empty_dirs'])} 个")
@@ -339,7 +355,8 @@ class FileOrganizer:
         Returns:
             综合诊断报告
         """
-        print(f"\n[Diagnose] 诊断: {self.download_folder}\n")
+        if self.verbose:
+            print(f"\n[诊断] {self.download_folder}\n")
 
         report = {
             "naming_issues": self.normalizer.diagnose(self.download_folder),
@@ -348,7 +365,7 @@ class FileOrganizer:
             "duplicates": self.find_duplicates(),
         }
 
-        self._print_diagnosis(report)
+        self._print_diagnosis(report, verbose=self.verbose)
         return report
 
     # ── 辅助方法 ────────────────────────────────────────────────
@@ -396,10 +413,12 @@ class FileOrganizer:
             lines.append(f"   ... 还有 {len(duplicates) - 5} 组")
         return "\n".join(lines)
 
-    def _print_stats(self, dry_run: bool):
+    def _print_stats(self, dry_run: bool, verbose: bool = True):
+        if not verbose:
+            return
         mode = "预览" if dry_run else "执行"
         print(f"\n{'=' * 60}")
-        print(f"[Stats] 整理完成 ({mode}模式)")
+        print(f"[统计] 整理完成（{mode}模式）")
         print(f"{'=' * 60}")
         print(f"   处理文件: {self.stats['processed']}")
         print(f"   移动文件: {self.stats['moved']}")
@@ -408,17 +427,20 @@ class FileOrganizer:
         print(f"   错误文件: {self.stats['errors']}")
         print(f"{'=' * 60}\n")
 
-    def _print_diagnosis(self, report: Dict):
+    def _print_diagnosis(self, report: Dict, verbose: bool = True):
         """打印诊断报告"""
+        if not verbose:
+            return
         naming = report["naming_issues"]
         storage = report["storage_analysis"]
         archive = report["archive_plan"]
         dups = report["duplicates"]
 
-        print(f"[Naming] 命名问题:")
+        print(f"[命名] 命名问题:")
         print(f"   缺日期后缀: {len(naming['needs_date_suffix'])} 个文件")
         print(f"   缺数字前缀: {len(naming['needs_prefix'])} 个文件夹")
         print(f"   嵌套过深:   {len(naming['too_deep_nested'])} 个文件")
+        print(f"   命名不合规: {len(naming.get('irregular_names', []))} 个文件")
 
         print(f"\n[Storage] 存储状态:")
         print(f"   总大小:     {storage['total_size_bytes'] / (1024*1024):.1f} MB")

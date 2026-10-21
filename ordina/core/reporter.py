@@ -160,7 +160,7 @@ class Reporter:
             lines.append(f"")
 
         lines.append(f"---")
-        lines.append(f"*由 Download Organizer v2.0 自动生成*")
+        lines.append(f"*由 Ordina / 归序 自动生成*")
 
         md_text = "\n".join(lines)
 

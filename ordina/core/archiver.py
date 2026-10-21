@@ -7,21 +7,14 @@
 - 智能归档建议
 """
 
-import os
 import re
 import shutil
-import sys
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 
-# 确保当前目录在 Python 路径中
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
-
-from config import (
+from .config import (
     ARCHIVE_DAYS_THRESHOLD,
     LARGE_FILE_SIZE_MB,
     TEMP_FILE_EXTENSIONS,

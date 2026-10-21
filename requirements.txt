@@ -1,8 +1,8 @@
-# Download Organizer - 运行依赖
+# Ordina / 归序 - 运行依赖
 # 核心功能仅使用 Python 标准库，无需 pip 安装任何第三方包。
 
 # ---- 运行时环境要求 ----
-# Python >= 3.8
+# Python >= 3.9（使用了 dict 合并、类型注解等语法）
 # 操作系统: Windows / macOS / Linux（GUI 需 tkinter；安卓功能需 Windows 或可运行 adb 的环境）
 # 权限: 整理目标目录的读写权限（手机功能需 USB 调试授权）
 

@@ -1,7 +1,7 @@
 """
 安卓手机文件管理支持包
 =====================
-为 download_organizer 提供通过 ADB（Android Debug Bridge）管理手机文件的能力。
+为 Ordina（归序）提供通过 ADB（Android Debug Bridge）管理手机文件的能力。
 
 模块结构:
 - adb_bridge.py:    ADB 连接、设备检测、文件操作（pull/push/list/delete/move）

@@ -18,17 +18,14 @@
 """
 
 import logging
-import sys
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple, Union, Callable
 
-# 确保父目录在路径中
-_current_dir = os.path.dirname(os.path.abspath(__file__))
-_parent_dir = os.path.dirname(_current_dir)
-if _parent_dir not in sys.path:
-    sys.path.insert(0, _parent_dir)
+from ..core.classifiers import BaseClassifier, PurposeClassifier, create_classifier
+from ..core.naming import NameNormalizer
+from ..core.reporter import Reporter
 
 from .adb_bridge import AdbBridge, PhoneFileInfo, AdbError, DeviceNotFoundError
 from .phone_scanner import PhoneScanner, ScanResult
@@ -39,9 +36,6 @@ from .phone_config import (
     match_phone_pattern,
     classify_phone_size,
 )
-from classifiers import BaseClassifier, PurposeClassifier, create_classifier
-from normalizer import NameNormalizer
-from reporter import Reporter
 
 logger = logging.getLogger(__name__)
 
@@ -239,22 +233,29 @@ class PhoneOrganizer:
                     month_str = file_info.modified_time.strftime("%Y-%m")
                     target_dir = f"{target_dir}/{month_str}"
 
-                # 处理文件名（日期后缀）
+                # 处理文件名（按命名规则：日期后缀 + 安全清洗）
                 target_name = file_info.name
-                if add_date_suffix and file_info.modified_time:
-                    stem, ext = os.path.splitext(file_info.name)
-                    date_str = file_info.modified_time.strftime("%Y%m%d")
-                    target_name = f"{stem}_{date_str}{ext}"
+                if add_date_suffix:
+                    try:
+                        target_name = self.normalizer.add_date_suffix(
+                            Path(file_info.name), date=file_info.modified_time
+                        )
+                    except Exception:
+                        stem, ext = os.path.splitext(file_info.name)
+                        date_str = (file_info.modified_time or datetime.now()).strftime("%Y%m%d")
+                        target_name = f"{stem}_{date_str}{ext}"
 
                 target_path = f"{target_dir}/{target_name}"
 
-                # 冲突处理
-                if target_path != file_info.path:
-                    # 检查目标是否存在
-                    if self._phone_file_exists(target_path):
-                        stem, ext = os.path.splitext(target_name)
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        target_path = f"{target_dir}/{stem}_{timestamp}{ext}"
+                # 冲突处理：语义化 _v2 / _v3（与 PC 端保持一致）
+                if target_path != file_info.path and self._phone_file_exists(target_path):
+                    stem, ext = os.path.splitext(target_name)
+                    pattern = self.normalizer.rules.conflict_pattern
+                    for n in range(2, 100):
+                        candidate = f"{target_dir}/{stem}{pattern.format(n=n)}{ext}"
+                        if not self._phone_file_exists(candidate):
+                            target_path = candidate
+                            break
 
                 # 执行移动
                 if not dry_run:

@@ -6,34 +6,49 @@
 
 用法:
   # PC 端
-  python -m download_organizer.cli organize --path ~/Downloads
-  python -m download_organizer.cli analyze --path ~/Downloads
-  python -m download_organizer.cli cleanup --path ~/Downloads --dry-run
-  python -m download_organizer.cli rename --path ~/Downloads --add-date-suffix
-  python -m download_organizer.cli version
+  python -m ordina cli organize --path ~/Downloads
+  python -m ordina cli analyze --path ~/Downloads
+  python -m ordina cli cleanup --path ~/Downloads
+  python -m ordina cli rename --path ~/Downloads --template "{name}_{date}"
+  python -m ordina cli naming
+  python -m ordina cli version
 
   # 安卓手机端
-  python -m download_organizer.cli phone devices
-  python -m download_organizer.cli phone info
-  python -m download_organizer.cli phone organize --path /sdcard/Download
-  python -m download_organizer.cli phone backup --remote /sdcard/DCIM --local D:/backup
+  python -m ordina cli phone devices
+  python -m ordina cli phone info
+  python -m ordina cli phone organize --path /sdcard/Download
+  python -m ordina cli phone backup --remote /sdcard/DCIM --local D:/backup
 """
 
 import argparse
 import json
-import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
-# 确保当前目录在 Python 路径中
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
+from ..core import (
+    FileOrganizer,
+    NameNormalizer,
+    NamingRules,
+    DateSource,
+    TEMPLATE_PRESETS,
+    PurposeClassifier,
+    Reporter,
+    DATE_SUFFIX_FORMAT,
+)
 
-from organizer import FileOrganizer
-from reporter import Reporter
-from classifiers import PurposeClassifier
+
+def build_naming_rules(args) -> NamingRules:
+    """从命令行参数构建命名规则"""
+    overrides = {}
+    if getattr(args, "template", None):
+        overrides["file_template"] = args.template
+    if getattr(args, "date_source", None):
+        overrides["date_source"] = args.date_source
+    if getattr(args, "date_format", None):
+        overrides["date_format"] = args.date_format
+    return NamingRules(**overrides)
 
 
 def cmd_organize(args):
@@ -46,6 +61,7 @@ def cmd_organize(args):
     organizer = FileOrganizer(
         download_folder=path,
         mode=args.mode,
+        naming_rules=build_naming_rules(args),
     )
 
     start = time.time()
@@ -136,8 +152,7 @@ def cmd_rename(args):
         print(f"[ERR] 路径不存在或不是目录: {path}")
         sys.exit(1)
 
-    from normalizer import NameNormalizer
-    normalizer = NameNormalizer()
+    normalizer = NameNormalizer(rules=build_naming_rules(args))
 
     # 收集文件
     if args.recursive:
@@ -145,15 +160,24 @@ def cmd_rename(args):
     else:
         files = [f for f in path.iterdir() if f.is_file() and not f.name.startswith('.')]
 
-    if args.add_date_suffix:
-        preview = normalizer.preview_rename(files, add_date=True)
-        print(f"\n[Note] 日期后缀预览 (共 {len(preview)} 个文件):")
+    # 即使模板里没有 {date}，也提供「仅安全清洗」能力
+    add_date = "{date}" in normalizer.rules.file_template
+    preview = normalizer.preview_rename(files, add_date=add_date)
+    if not add_date:
+        preview = [
+            (fp, normalizer.sanitize_filename(fp.name))
+            for fp in files
+            if normalizer.sanitize_filename(fp.name) != fp.name
+        ]
+
+    if preview:
+        print(f"\n[预览] 重命名预览（共 {len(preview)} 个文件）:")
         for orig, new_name in preview[:20]:
             print(f"   {orig.name} → {new_name}")
         if len(preview) > 20:
             print(f"   ... 还有 {len(preview) - 20} 个")
 
-        if not args.dry_run and preview:
+        if not args.dry_run:
             results = normalizer.execute_rename(files, add_date=True, dry_run=False)
             print(f"\n[OK] 重命名完成！共 {len(results)} 个文件。")
             for orig, new in results[:10]:
@@ -181,26 +205,52 @@ def cmd_diagnose(args):
 def cmd_list_categories(args):
     """列出所有用途分类"""
     cats = PurposeClassifier.list_categories_with_info()
-    print("\n📂 8大用途分类体系:\n")
+    print("\n8 大用途分类体系:\n")
     for cat, desc in cats:
         print(f"  {cat}")
         print(f"    {desc}")
         print()
 
 
+def cmd_naming(args):
+    """显示当前命名规则与可用预设"""
+    rules = build_naming_rules(args)
+    normalizer = NameNormalizer(rules=rules)
+
+    print("\n当前命名规则")
+    print("=" * 56)
+    for key, value in rules.to_dict().items():
+        print(f"  {key:22s} {value}")
+    print(f"\n  规则摘要: {rules.summary()}")
+
+    print("\n可用模板预设")
+    print("-" * 56)
+    for template, desc in TEMPLATE_PRESETS.items():
+        mark = "*" if template == rules.file_template else " "
+        print(f" {mark} {template:28s} {desc}")
+
+    print("\n日期来源")
+    print("-" * 56)
+    for choice in DateSource.CHOICES:
+        mark = "*" if choice == rules.date_source else " "
+        print(f" {mark} {choice:12s} {DateSource.LABELS[choice]}")
+
+    print("\n示例（以「季度报告.pdf」、修改时间 2026-03-07 为例）")
+    print("-" * 56)
+    demo = Path("季度报告.pdf")
+    sample_date = datetime(2026, 3, 7)
+    for template in TEMPLATE_PRESETS:
+        sample = normalizer.with_rules(file_template=template).build_name(
+            demo.stem, demo.suffix, date=sample_date, category="01_工作目录",
+        )
+        print(f"   {template:28s} → {sample}")
+    print()
+
+
 def cmd_version(args):
     """显示版本"""
-    try:
-        from download_organizer import __version__
-        print(f"Download Organizer v{__version__}")
-    except ImportError:
-        # 直接运行时获取版本
-        import importlib.util
-        init_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "__init__.py")
-        spec = importlib.util.spec_from_file_location("download_organizer_init", init_path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        print(f"Download Organizer v{mod.__version__}")
+    from .. import __version__, __app_name__, __app_name_cn__
+    print(f"{__app_name__} / {__app_name_cn__} v{__version__}")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -516,25 +566,38 @@ def cmd_phone_reconnect(args):
 # ═══════════════════════════════════════════════════════════════
 
 
-def main():
+def add_naming_arguments(parser: argparse.ArgumentParser) -> None:
+    """为支持命名的命令挂载命名规则参数"""
+    parser.add_argument("--template", "-T", default="{name}_{date}",
+                        help='命名模板，占位符 {name} {date} {category}，默认 "{name}_{date}"')
+    parser.add_argument("--date-source", default=DateSource.AUTO,
+                        choices=list(DateSource.CHOICES),
+                        help="日期来源（默认 auto: 文件名 > EXIF > 修改时间）")
+    parser.add_argument("--date-format", default=DATE_SUFFIX_FORMAT,
+                        help="日期格式，如 %%Y%%m%%d / %%Y-%%m-%%d / %%Y%%m")
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="[Folder] 下载文件夹整理工具 v2.0 -- 支持 PC 和安卓手机",
+        prog="ordina",
+        description="Ordina / 归序 — 按用途分类的文件整理工具（PC + 安卓手机）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
   # PC 端操作
-  %(prog)s organize --path ~/Downloads                    # 预览整理
-  %(prog)s analyze --path ~/Downloads --format markdown   # 生成分析报告
+  %(prog)s cli organize --path ~/Downloads                    # 预览整理
+  %(prog)s cli analyze --path ~/Downloads --format markdown   # 生成分析报告
+  %(prog)s cli naming                                         # 查看命名规则与预设
 
   # 安卓手机操作
-  %(prog)s phone devices                                   # 列出连接的手机设备
-  %(prog)s phone info                                      # 查看手机信息
-  %(prog)s phone organize --path /sdcard/Download          # 预览整理手机下载目录
-  %(prog)s phone organize --path /sdcard/Download --execute # 执行整理
-  %(prog)s phone cleanup --path /sdcard/Download           # 清理手机临时文件
-  %(prog)s phone backup --remote /sdcard/DCIM --local ./backup  # 备份手机相册到电脑
-  %(prog)s phone diagnose                                  # 全面诊断手机存储
-  %(prog)s phone scan --path /sdcard --ext .apk           # 扫描手机 APK 文件
+  %(prog)s cli phone devices                                   # 列出连接的手机设备
+  %(prog)s cli phone info                                      # 查看手机信息
+  %(prog)s cli phone organize --path /sdcard/Download          # 预览整理手机下载目录
+  %(prog)s cli phone organize --path /sdcard/Download --execute # 执行整理
+  %(prog)s cli phone cleanup --path /sdcard/Download           # 清理手机临时文件
+  %(prog)s cli phone backup --remote /sdcard/DCIM --local ./backup  # 备份手机相册到电脑
+  %(prog)s cli phone diagnose                                  # 全面诊断手机存储
+  %(prog)s cli phone scan --path /sdcard --ext .apk           # 扫描手机 APK 文件
         """,
     )
 
@@ -558,6 +621,7 @@ def main():
     org_parser.add_argument("--no-prefix", action="store_true",
                             help="禁用数字前缀")
     org_parser.add_argument("--output", "-o", help="导出报告路径 (.json/.csv)")
+    add_naming_arguments(org_parser)
 
     # -- analyze --
     ana_parser = subparsers.add_parser("analyze", help="分析目标目录")
@@ -583,6 +647,11 @@ def main():
                             help="递归处理子目录")
     rnm_parser.add_argument("--execute", action="store_true",
                             help="实际执行（取消预览模式）")
+    add_naming_arguments(rnm_parser)
+
+    # -- naming --
+    naming_parser = subparsers.add_parser("naming", help="查看/预览命名规则")
+    add_naming_arguments(naming_parser)
 
     # -- diagnose --
     diag_parser = subparsers.add_parser("diagnose", help="全面诊断")
@@ -664,7 +733,7 @@ def main():
     # -- phone reconnect --
     phone_sub.add_parser("reconnect", help="重新连接 USB 设备")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # 统一处理 dry_run / execute 转换
     if hasattr(args, "execute") and args.execute:
@@ -680,6 +749,7 @@ def main():
         "rename": cmd_rename,
         "diagnose": cmd_diagnose,
         "categories": cmd_list_categories,
+        "naming": cmd_naming,
         "version": cmd_version,
     }
 

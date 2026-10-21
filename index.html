@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ordina · 归序 — 让下载文件夹自己归位</title>
+<meta name="description" content="Ordina / 归序 v3.0：Windows 下载文件夹整理工具。8 大用途分类、严谨命名引擎、重复文件检测、双主题 GUI、命令行与安卓 ADB 支持。纯 Python 标准库，开箱即用。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════ TOKENS ═══════════════════════ */
+:root {
+  --bg: #14120d;
+  --surface: #1b1811;
+  --surface-2: #242017;
+  --text: #f0ebdd;
+  --muted: #a39b85;
+  --faint: #6f6857;
+  --accent: #ffb224;
+  --accent-dim: rgba(255, 178, 36, .14);
+  --accent-ink: #241a04;
+  --line: rgba(240, 235, 221, .13);
+  --line-strong: rgba(240, 235, 221, .28);
+
+  --font-display: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+
+  --step--1: clamp(.78rem, .74rem + .2vw, .88rem);
+  --step-0: clamp(.95rem, .9rem + .25vw, 1.06rem);
+  --step-1: clamp(1.2rem, 1.1rem + .5vw, 1.45rem);
+  --step-2: clamp(1.55rem, 1.35rem + 1vw, 2.1rem);
+  --step-3: clamp(2.1rem, 1.7rem + 2vw, 3.2rem);
+  --step-4: clamp(3rem, 2rem + 5vw, 5.75rem);
+
+  --space-1: 4px; --space-2: 8px; --space-3: 16px; --space-4: 24px;
+  --space-5: 40px; --space-6: 64px; --space-7: 96px; --space-8: 144px;
+  --radius: 6px;
+
+  --shadow-2: 0 8px 28px rgba(0, 0, 0, .45);
+  --shadow-3: 0 24px 64px rgba(0, 0, 0, .55);
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  --dur-fast: 160ms; --dur-base: 320ms; --dur-slow: 640ms;
+}
+
+/* ═══════════════════════ BASE ═══════════════════════ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: var(--step-0);
+  line-height: 1.75;
+  letter-spacing: .02em;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+::selection { background: var(--accent); color: var(--accent-ink); }
+a { color: inherit; text-decoration: none; }
+a:focus-visible, button:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px;
+}
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* 氛围层：渐变网格 + 颗粒 */
+.atmosphere {
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background:
+    radial-gradient(56rem 38rem at 8% -12%, rgba(255, 178, 36, .13), transparent 62%),
+    radial-gradient(48rem 36rem at 102% 6%, rgba(255, 178, 36, .06), transparent 55%),
+    radial-gradient(70rem 50rem at 50% 115%, rgba(240, 235, 221, .045), transparent 60%);
+}
+.grain {
+  position: fixed; inset: 0; pointer-events: none; z-index: 1; opacity: .05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.wrap { position: relative; z-index: 2; max-width: 1200px; margin: 0 auto; padding: 0 var(--space-4); }
+
+/* ═══════════════════════ 入场序列 ═══════════════════════ */
+.reveal { opacity: 0; transform: translateY(26px); }
+.reveal.in {
+  opacity: 1; transform: none;
+  transition: opacity var(--dur-slow) var(--ease-out), transform var(--dur-slow) var(--ease-out);
+}
+.reveal[data-delay="1"].in { transition-delay: 90ms; }
+.reveal[data-delay="2"].in { transition-delay: 180ms; }
+.reveal[data-delay="3"].in { transition-delay: 270ms; }
+.reveal[data-delay="4"].in { transition-delay: 360ms; }
+
+/* ═══════════════════════ 导航 ═══════════════════════ */
+.nav {
+  position: sticky; top: 0; z-index: 50;
+  background: rgba(20, 18, 13, .82);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+.nav-inner {
+  max-width: 1200px; margin: 0 auto; padding: 0 var(--space-4);
+  height: 64px; display: flex; align-items: center; gap: var(--space-4);
+}
+.brand { display: flex; align-items: baseline; gap: 10px; font-weight: 900; letter-spacing: .04em; }
+.brand .brand-latin { font-family: var(--font-mono); font-size: 1.05rem; color: var(--accent); }
+.brand .brand-cn { font-size: 1.05rem; }
+.brand .brand-ver { font-family: var(--font-mono); font-size: .68rem; color: var(--faint); border: 1px solid var(--line); padding: 1px 7px; border-radius: 99px; }
+.nav-links { display: flex; gap: var(--space-4); margin-left: auto; font-size: var(--step--1); }
+.nav-links a { color: var(--muted); padding: 6px 2px; position: relative; transition: color var(--dur-fast) ease-out; }
+.nav-links a::after {
+  content: ""; position: absolute; left: 0; bottom: 0; height: 1px; width: 100%;
+  background: var(--accent); transform: scaleX(0); transform-origin: left;
+  transition: transform var(--dur-base) var(--ease-out);
+}
+.nav-links a:hover { color: var(--text); }
+.nav-links a:hover::after { transform: scaleX(1); }
+.nav-cta {
+  font-family: var(--font-mono); font-size: var(--step--1); font-weight: 700;
+  color: var(--accent-ink); background: var(--accent);
+  padding: 9px 18px; border-radius: var(--radius);
+  transition: transform var(--dur-fast) ease-out, box-shadow var(--dur-fast) ease-out;
+}
+.nav-cta:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(255, 178, 36, .35); }
+
+/* ═══════════════════════ 区块通用 ═══════════════════════ */
+.section { padding: var(--space-8) 0 var(--space-7); }
+.sec-head { display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-6); }
+.sec-no {
+  font-family: var(--font-mono); font-size: var(--step--1); color: var(--accent);
+  border: 1px solid var(--line-strong); padding: 3px 10px; border-radius: 2px;
+}
+.sec-title { font-size: var(--step-3); font-weight: 900; letter-spacing: .02em; line-height: 1.15; }
+.sec-sub { color: var(--muted); max-width: 34em; margin-top: var(--space-2); }
+
+/* ═══════════════════════ HERO ═══════════════════════ */
+.hero { padding: var(--space-7) 0 var(--space-6); }
+.hero-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: var(--space-6); align-items: center; }
+.hero-kicker {
+  display: inline-flex; align-items: center; gap: 10px;
+  font-family: var(--font-mono); font-size: var(--step--1); color: var(--muted);
+  border: 1px solid var(--line); padding: 6px 14px; border-radius: 99px; margin-bottom: var(--space-4);
+}
+.hero-kicker .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+.hero h1 {
+  font-size: var(--step-4); font-weight: 900; line-height: 1.08; letter-spacing: .01em;
+  margin-bottom: var(--space-4);
+}
+.hero h1 .accent-line {
+  display: block; color: var(--accent);
+  font-feature-settings: "palt";
+}
+.hero-sub { color: var(--muted); max-width: 30em; margin-bottom: var(--space-5); }
+.hero-sub strong { color: var(--text); font-weight: 700; }
+.hero-actions { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
+.btn-primary {
+  font-family: var(--font-mono); font-weight: 700; font-size: var(--step-0);
+  background: var(--accent); color: var(--accent-ink);
+  padding: 14px 28px; border-radius: var(--radius); border: none; cursor: pointer;
+  transition: transform var(--dur-fast) ease-out, box-shadow var(--dur-fast) ease-out;
+}
+.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 10px 28px rgba(255, 178, 36, .35); }
+.btn-primary:active { transform: translateY(0); }
+.btn-ghost {
+  font-family: var(--font-mono); font-size: var(--step-0); color: var(--text);
+  padding: 14px 24px; border-radius: var(--radius); border: 1px solid var(--line-strong);
+  transition: border-color var(--dur-fast), background var(--dur-fast);
+  display: inline-block;
+}
+.btn-ghost:hover { border-color: var(--accent); background: var(--accent-dim); }
+.hero-stats { display: flex; gap: var(--space-5); margin-top: var(--space-5); }
+.hero-stat .num { font-family: var(--font-mono); font-size: var(--step-2); font-weight: 700; color: var(--text); }
+.hero-stat .lbl { font-size: var(--step--1); color: var(--faint); }
+
+/* ── 演示面板 ── */
+.demo {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: var(--shadow-3); overflow: hidden;
+}
+.demo-titlebar {
+  display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+  border-bottom: 1px solid var(--line); background: var(--surface-2);
+}
+.demo-titlebar .tl { width: 11px; height: 11px; border-radius: 50%; background: var(--faint); opacity: .5; }
+.demo-titlebar .tt { font-family: var(--font-mono); font-size: .72rem; color: var(--muted); margin-left: 8px; letter-spacing: .08em; }
+.demo-run {
+  margin-left: auto; font-family: var(--font-mono); font-size: .75rem; font-weight: 700;
+  background: var(--accent); color: var(--accent-ink); border: none; border-radius: 4px;
+  padding: 7px 14px; cursor: pointer; min-height: 32px;
+  transition: opacity var(--dur-fast), transform var(--dur-fast);
+}
+.demo-run:hover:not(:disabled) { transform: translateY(-1px); }
+.demo-run:disabled { opacity: .35; cursor: default; }
+.demo-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); min-height: 300px; }
+.demo-col { padding: 14px 16px; }
+.demo-col + .demo-col { border-left: 1px dashed var(--line); }
+.demo-col-h {
+  font-family: var(--font-mono); font-size: .68rem; letter-spacing: .14em;
+  color: var(--faint); text-transform: uppercase; margin-bottom: 10px;
+}
+.demo-file {
+  font-family: var(--font-mono); font-size: .78rem; color: var(--muted);
+  padding: 7px 9px; border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: transform var(--dur-base) var(--ease-out), opacity var(--dur-base) var(--ease-out), color var(--dur-fast);
+}
+.demo-file.moved { transform: translateX(24px); opacity: .18; }
+.demo-cat {
+  display: flex; align-items: baseline; gap: 8px;
+  font-family: var(--font-mono); font-size: .78rem; color: var(--faint);
+  padding: 7px 9px; border-radius: 4px;
+  transition: background var(--dur-fast), color var(--dur-fast);
+}
+.demo-cat .cnt { margin-left: auto; font-size: .68rem; color: var(--faint); }
+.demo-cat.hit { background: var(--accent-dim); color: var(--text); }
+.demo-cat.hit .cnt { color: var(--accent); font-weight: 700; }
+.demo-log {
+  border-top: 1px solid var(--line); background: #100e09;
+  font-family: var(--font-mono); font-size: .72rem; color: var(--muted);
+  padding: 12px 16px; height: 108px; overflow-y: auto; line-height: 1.9;
+}
+.demo-log .ok { color: var(--accent); }
+.demo-log .dim { color: var(--faint); }
+.demo-log::-webkit-scrollbar { width: 6px; }
+.demo-log::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 3px; }
+
+/* ═══════════════════════ 跑马灯 ═══════════════════════ */
+.marquee {
+  border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  overflow: hidden; padding: 18px 0; position: relative; z-index: 2;
+  background: var(--surface);
+}
+.marquee-track {
+  display: flex; gap: 48px; width: max-content;
+  animation: scroll 36s linear infinite;
+}
+.marquee-track span {
+  font-family: var(--font-mono); font-size: var(--step-0); color: var(--faint);
+  white-space: nowrap; display: flex; align-items: center; gap: 48px;
+}
+.marquee-track span i { font-style: normal; color: var(--accent); }
+@keyframes scroll { to { transform: translateX(-50%); } }
+
+/* ═══════════════════════ 前后对比 ═══════════════════════ */
+.compare { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-4); }
+.pane {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  padding: var(--space-4); font-family: var(--font-mono); font-size: .8rem; line-height: 2.05;
+  overflow-x: auto;
+}
+.pane-h {
+  display: flex; align-items: center; gap: 10px; margin-bottom: var(--space-3);
+  font-size: .7rem; letter-spacing: .14em; text-transform: uppercase; color: var(--faint);
+}
+.pane-h .tag { border: 1px solid var(--line-strong); border-radius: 2px; padding: 2px 8px; color: var(--muted); }
+.pane.after .pane-h .tag { border-color: var(--accent); color: var(--accent); }
+.pane .tree-dir { color: var(--text); font-weight: 700; }
+.pane .tree-file { color: var(--muted); }
+.pane .tree-hl { color: var(--accent); }
+.pane .tree-cmt { color: var(--faint); }
+
+/* ═══════════════════════ 功能索引 ═══════════════════════ */
+.feat-list { border-top: 1px solid var(--line); }
+.feat {
+  display: grid; grid-template-columns: 88px minmax(0, 1fr) minmax(0, 1.2fr); gap: var(--space-4);
+  align-items: baseline; padding: var(--space-4) var(--space-2);
+  border-bottom: 1px solid var(--line);
+  transition: background var(--dur-fast), padding-left var(--dur-base) var(--ease-out);
+}
+.feat:hover { background: var(--surface); padding-left: var(--space-4); }
+.feat-no { font-family: var(--font-mono); font-size: var(--step-1); font-weight: 700; color: var(--faint); transition: color var(--dur-fast); }
+.feat:hover .feat-no { color: var(--accent); }
+.feat-name { font-size: var(--step-1); font-weight: 900; }
+.feat-name .en { display: block; font-family: var(--font-mono); font-size: .68rem; font-weight: 400; letter-spacing: .16em; color: var(--faint); text-transform: uppercase; margin-top: 4px; }
+.feat-desc { color: var(--muted); font-size: var(--step--1); }
+.feat-desc code { font-family: var(--font-mono); font-size: .82em; color: var(--text); background: var(--surface-2); border: 1px solid var(--line); border-radius: 3px; padding: 1px 6px; }
+
+/* ═══════════════════════ 命名引擎 ═══════════════════════ */
+.naming-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
+.naming-card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  padding: var(--space-4);
+}
+.naming-card h3 { font-size: var(--step-0); font-weight: 700; margin-bottom: var(--space-3); display: flex; gap: 10px; align-items: baseline; }
+.naming-card h3 .idx { font-family: var(--font-mono); font-size: .68rem; color: var(--accent); }
+.naming-card .diff { font-family: var(--font-mono); font-size: .78rem; line-height: 2.1; }
+.naming-card .bad { color: var(--faint); text-decoration: line-through; text-decoration-color: rgba(240,235,221,.4); }
+.naming-card .good { color: var(--accent); }
+.naming-card .note { font-size: var(--step--1); color: var(--muted); margin-top: var(--space-3); }
+.tpl-table { width: 100%; border-collapse: collapse; font-size: .78rem; font-family: var(--font-mono); }
+.tpl-table td { padding: 8px 4px; border-bottom: 1px dashed var(--line); color: var(--muted); }
+.tpl-table tr:last-child td { border-bottom: none; }
+.tpl-table td:first-child { color: var(--text); }
+.tpl-table td:last-child { text-align: right; color: var(--accent); }
+
+/* ═══════════════════════ 双端 ═══════════════════════ */
+.platform-grid { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: var(--space-4); align-items: stretch; }
+.gui-mock { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+.gui-mock-bar { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.theme-toggle { margin-left: auto; display: inline-flex; border: 1px solid var(--line-strong); border-radius: 99px; overflow: hidden; }
+.theme-toggle button {
+  font-family: var(--font-mono); font-size: .7rem; padding: 7px 14px; border: none; cursor: pointer;
+  background: transparent; color: var(--muted); min-height: 32px;
+  transition: background var(--dur-fast), color var(--dur-fast);
+}
+.theme-toggle button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.gui-canvas { flex: 1; padding: 18px; display: grid; grid-template-columns: 88px 1fr; gap: 12px; min-height: 240px; transition: background var(--dur-base); }
+.gui-canvas .side { border-radius: 6px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.gui-canvas .side i { display: block; height: 9px; border-radius: 3px; }
+.gui-canvas .main { border-radius: 6px; padding: 12px; display: flex; flex-direction: column; gap: 9px; }
+.gui-canvas .main i { display: block; height: 10px; border-radius: 3px; }
+.gui-canvas .main i:nth-child(2) { width: 78%; } .gui-canvas .main i:nth-child(3) { width: 88%; }
+.gui-canvas .main i:nth-child(4) { width: 62%; } .gui-canvas .main i:nth-child(5) { width: 83%; }
+/* 主题预览面板自带变量，随按钮切换 */
+.gui-canvas[data-theme="dark"]  { background: #23262e; }
+.gui-canvas[data-theme="dark"] .side { background: #2b2f38; } .gui-canvas[data-theme="dark"] .side i { background: #3d4250; }
+.gui-canvas[data-theme="dark"] .side i:first-child { background: var(--accent); }
+.gui-canvas[data-theme="dark"] .main { background: #2b2f38; } .gui-canvas[data-theme="dark"] .main i { background: #454b58; }
+.gui-canvas[data-theme="light"] { background: #f4f2ec; }
+.gui-canvas[data-theme="light"] .side { background: #ffffff; } .gui-canvas[data-theme="light"] .side i { background: #e3e0d5; }
+.gui-canvas[data-theme="light"] .side i:first-child { background: #d9930d; }
+.gui-canvas[data-theme="light"] .main { background: #ffffff; } .gui-canvas[data-theme="light"] .main i { background: #e8e5da; }
+.adb-card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: var(--space-4); display: flex; flex-direction: column; }
+.adb-card h3 { font-size: var(--step-1); font-weight: 900; margin-bottom: var(--space-2); }
+.adb-card p { color: var(--muted); font-size: var(--step--1); margin-bottom: var(--space-3); }
+.adb-list { list-style: none; font-size: var(--step--1); color: var(--muted); display: grid; gap: 10px; margin-top: auto; }
+.adb-list li { display: flex; gap: 10px; align-items: baseline; }
+.adb-list .k { font-family: var(--font-mono); color: var(--accent); font-size: .72rem; flex-shrink: 0; }
+
+/* ═══════════════════════ CLI ═══════════════════════ */
+.terminal { background: #100e09; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow-2); }
+.terminal-bar { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.terminal-bar .tl { width: 11px; height: 11px; border-radius: 50%; background: var(--faint); opacity: .5; }
+.copy-btn {
+  margin-left: auto; font-family: var(--font-mono); font-size: .7rem; color: var(--muted);
+  background: none; border: 1px solid var(--line-strong); border-radius: 4px;
+  padding: 6px 12px; cursor: pointer; min-height: 32px;
+  transition: color var(--dur-fast), border-color var(--dur-fast);
+}
+.copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+.terminal-body { padding: var(--space-4); font-family: var(--font-mono); font-size: .8rem; line-height: 2.2; overflow-x: auto; }
+.terminal-body .prompt { color: var(--accent); user-select: none; }
+.terminal-body .cmd { color: var(--text); }
+.terminal-body .out { color: var(--faint); }
+.terminal-body .hl { color: var(--accent); }
+
+/* ═══════════════════════ 开始使用 ═══════════════════════ */
+.start-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-4); }
+.start-card {
+  border: 1px solid var(--line); border-radius: 10px; padding: var(--space-4);
+  background: var(--surface); display: flex; flex-direction: column; gap: var(--space-2);
+  transition: border-color var(--dur-fast), transform var(--dur-fast) ease-out;
+}
+.start-card:hover { border-color: var(--line-strong); transform: translateY(-3px); }
+.start-card .step { font-family: var(--font-mono); font-size: .68rem; letter-spacing: .16em; color: var(--accent); }
+.start-card h3 { font-size: var(--step-0); font-weight: 900; }
+.start-card .cmdline {
+  font-family: var(--font-mono); font-size: .74rem; color: var(--text);
+  background: #100e09; border: 1px solid var(--line); border-radius: 5px; padding: 10px 12px;
+  word-break: break-all; margin-top: auto;
+}
+.start-card p { color: var(--muted); font-size: var(--step--1); }
+.sysreq { margin-top: var(--space-5); display: flex; flex-wrap: wrap; gap: var(--space-3); font-family: var(--font-mono); font-size: var(--step--1); color: var(--muted); }
+.sysreq span { border: 1px solid var(--line); border-radius: 99px; padding: 6px 16px; }
+.sysreq b { color: var(--text); font-weight: 500; }
+
+/* ═══════════════════════ FOOTER ═══════════════════════ */
+.footer { border-top: 1px solid var(--line); padding: var(--space-5) 0; margin-top: var(--space-6); }
+.footer-inner { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: baseline; justify-content: space-between; }
+.footer .f-brand { font-weight: 900; }
+.footer .f-brand .mono { color: var(--accent); margin-right: 8px; }
+.footer .f-note { font-family: var(--font-mono); font-size: .72rem; color: var(--faint); }
+
+/* ═══════════════════════ 响应式 ═══════════════════════ */
+@media (max-width: 1024px) {
+  .hero-grid { grid-template-columns: 1fr; }
+  .platform-grid { grid-template-columns: 1fr; }
+  .start-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 768px) {
+  .nav-links { display: none; }
+  .compare { grid-template-columns: 1fr; }
+  .naming-grid { grid-template-columns: 1fr; }
+  .feat { grid-template-columns: 56px 1fr; }
+  .feat-desc { grid-column: 2; }
+  .hero-stats { gap: var(--space-4); }
+  .section { padding: var(--space-7) 0 var(--space-6); }
+}
+@media (max-width: 480px) {
+  .demo-cols { grid-template-columns: 1fr; }
+  .demo-col + .demo-col { border-left: none; border-top: 1px dashed var(--line); }
+}
+
+/* ═══════════════════════ 降级动效 ═══════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .reveal { opacity: 1; transform: none; transition: none; }
+  .marquee-track { animation: none; }
+  *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+}
+</style>
+</head>
+<body>
+<div class="atmosphere" aria-hidden="true"></div>
+<div class="grain" aria-hidden="true"></div>
+
+<!-- ═══════════ 导航 ═══════════ -->
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="#top" aria-label="Ordina 归序 首页">
+      <span class="brand-latin">ORDINA</span>
+      <span class="brand-cn">归序</span>
+      <span class="brand-ver">v3.0.0</span>
+    </a>
+    <nav class="nav-links" aria-label="页面导航">
+      <a href="#features">功能</a>
+      <a href="#naming">命名引擎</a>
+      <a href="#platform">双端</a>
+      <a href="#cli">命令行</a>
+    </nav>
+    <a class="nav-cta" href="#start">开始使用</a>
+  </div>
+</header>
+
+<main id="top">
+<!-- ═══════════ HERO ═══════════ -->
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <p class="hero-kicker reveal"><span class="dot" aria-hidden="true"></span>DOWNLOADS, DECLUTTERED — 下载文件夹整理工具</p>
+      <h1 class="reveal" data-delay="1">杂乱文件，<span class="accent-line">各归其序。</span></h1>
+      <p class="hero-sub reveal" data-delay="2">
+        Ordina / 归序把你的下载目录按<strong>用途</strong>归入 8 个编号分类：
+        工作、学习、相册、软件……各就其位。先预览、再执行，
+        配上经得起 Windows 挑剔的命名引擎——<strong>纯 Python 标准库，零依赖安装</strong>。
+      </p>
+      <div class="hero-actions reveal" data-delay="3">
+        <a class="btn-primary" href="#start">立即整理 →</a>
+        <a class="btn-ghost" href="#naming">看看命名引擎</a>
+      </div>
+      <dl class="hero-stats reveal" data-delay="4">
+        <div class="hero-stat"><dt class="num mono">08</dt><dd class="lbl">用途分类</dd></div>
+        <div class="hero-stat"><dt class="num mono">05</dt><dd class="lbl">命名模板</dd></div>
+        <div class="hero-stat"><dt class="num mono">02</dt><dd class="lbl">PC + 安卓双端</dd></div>
+        <div class="hero-stat"><dt class="num mono">00</dt><dd class="lbl">第三方依赖</dd></div>
+      </dl>
+    </div>
+
+    <!-- 现场演示 -->
+    <div class="demo reveal" data-delay="2" aria-label="整理效果演示">
+      <div class="demo-titlebar">
+        <span class="tl"></span><span class="tl"></span><span class="tl"></span>
+        <span class="tt">C:\Users\you\Downloads — 预览模式</span>
+        <button class="demo-run" id="demoRun" type="button">▶ 运行整理</button>
+      </div>
+      <div class="demo-cols">
+        <div class="demo-col">
+          <p class="demo-col-h">Before / 未整理</p>
+          <div id="demoFiles">
+            <div class="demo-file" data-cat="01">季度汇报终版_final_v2.docx</div>
+            <div class="demo-file" data-cat="02">高等数学_第7讲.mp4</div>
+            <div class="demo-file" data-cat="04">流浪地球3.1080p.mkv</div>
+            <div class="demo-file" data-cat="05">IMG_20260914_1830.jpg</div>
+            <div class="demo-file" data-cat="06">setup_7z2401-x64.exe</div>
+            <div class="demo-file" data-cat="07">简历_2026.pdf</div>
+            <div class="demo-file" data-cat="01">会议纪要-10月.docx</div>
+          </div>
+        </div>
+        <div class="demo-col">
+          <p class="demo-col-h">After / 归序之后</p>
+          <div id="demoCats">
+            <div class="demo-cat" data-cat="01">01_工作目录<span class="cnt">0</span></div>
+            <div class="demo-cat" data-cat="02">02_学习资料<span class="cnt">0</span></div>
+            <div class="demo-cat" data-cat="04">04_视频娱乐<span class="cnt">0</span></div>
+            <div class="demo-cat" data-cat="05">05_相册<span class="cnt">0</span></div>
+            <div class="demo-cat" data-cat="06">06_软件工具<span class="cnt">0</span></div>
+            <div class="demo-cat" data-cat="07">07_个人资料<span class="cnt">0</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="demo-log" id="demoLog" aria-live="polite">
+        <div class="dim">$ ordina organize --dry-run <span class="dim"># 等待执行…</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 跑马灯 ═══════════ -->
+<div class="marquee" aria-hidden="true">
+  <div class="marquee-track" id="marqueeTrack">
+    <span>01_工作目录 <i>◆</i> 02_学习资料 <i>◆</i> 03_参考资料 <i>◆</i> 04_视频娱乐 <i>◆</i> 05_相册 <i>◆</i> 06_软件工具 <i>◆</i> 07_个人资料 <i>◆</i> 08_存档资料 <i>◆</i> 重复文件检测 <i>◆</i> 命名模板 <i>◆</i> 预览后再执行 <i>◆</i></span>
+  </div>
+</div>
+
+<!-- ═══════════ 前后对比 ═══════════ -->
+<section class="section" id="compare">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="sec-no">SEC.01</span>
+      <h2 class="sec-title">同一个文件夹，两种人生</h2>
+    </div>
+    <p class="sec-sub reveal" data-delay="1">左边是你熟悉的那个下载目录；右边是运行一次 <span class="mono">organize --execute</span> 之后的样子。整理前先预览，确认无误再落盘。</p>
+    <div class="compare">
+      <div class="pane reveal" data-delay="1" aria-label="整理前的目录">
+        <p class="pane-h"><span class="tag">BEFORE</span> Downloads/</p>
+<pre>Downloads/
+├── 季度汇报终版_final_v2 (1).docx
+├── 高等数学_第7讲.mp4
+├── 流浪地球3.1080p.中英双字.mkv
+├── IMG_20260914_1830.jpg
+├── setup_7z2401-x64.exe
+├── 简历_2026.pdf
+├── 会议纪要-10月.docx
+├── 订单20240512001.xlsx
+├── 报告 草案?.pdf
+└── … 还有 213 个文件</pre>
+      </div>
+      <div class="pane after reveal" data-delay="2" aria-label="整理后的目录">
+        <p class="pane-h"><span class="tag">AFTER</span> Downloads/</p>
+<pre>Downloads/
+├── <span class="tree-dir">01_工作目录/</span>
+│   ├── 季度汇报终版_final_v2_20261021.docx
+│   ├── 会议纪要-10月_20261021.docx
+│   └── <span class="tree-hl">报告 草案_20261021.pdf</span> <span class="tree-cmt">← 非法字符已清洗</span>
+├── <span class="tree-dir">02_学习资料/</span>  高等数学_第7讲.mp4
+├── <span class="tree-dir">04_视频娱乐/</span>  流浪地球3.1080p.中英双字.mkv
+├── <span class="tree-dir">05_相册/</span>      IMG_20260914_1830.jpg
+├── <span class="tree-dir">06_软件工具/</span>  setup_7z2401-x64.exe
+└── <span class="tree-dir">07_个人资料/</span>
+    ├── 简历_2026.pdf
+    └── 订单20240512001.xlsx <span class="tree-cmt">← 流水号未被误判为日期</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 功能索引 ═══════════ -->
+<section class="section" id="features">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="sec-no">SEC.02</span>
+      <h2 class="sec-title">六件趁手的工具</h2>
+    </div>
+    <p class="sec-sub reveal" data-delay="1">没有云同步、没有账号体系、没有订阅制。就是一套把「整理」这件事做透的本地工具。</p>
+    <div class="feat-list">
+      <div class="feat reveal">
+        <span class="feat-no">01</span>
+        <h3 class="feat-name">用途分类<span class="en">Purpose-first</span></h3>
+        <p class="feat-desc">不止按扩展名分堆——按「你拿它做什么」归入 8 个编号目录。内置 200+ 中文关键词规则（合同、周报、课件、发票……），也支持自定义规则与置信度提示。</p>
+      </div>
+      <div class="feat reveal">
+        <span class="feat-no">02</span>
+        <h3 class="feat-name">重复检测<span class="en">Deduplication</span></h3>
+        <p class="feat-desc">先按文件大小分组、再算 MD5 指纹，「下载了三次的安装包」无所遁形。GUI 里可逐组勾选，一键移入 <code>_duplicates/</code> 隔离区而非直接删除。</p>
+      </div>
+      <div class="feat reveal">
+        <span class="feat-no">03</span>
+        <h3 class="feat-name">命名引擎<span class="en">Naming Engine</span></h3>
+        <p class="feat-desc">日期后缀、数字前缀、模板化命名、Windows 安全清洗、冲突语义化 <code>_v2</code>。规则全部可配置——详见下方 SEC.03。</p>
+      </div>
+      <div class="feat reveal">
+        <span class="feat-no">04</span>
+        <h3 class="feat-name">双主题 GUI<span class="en">True Dual-theme</span></h3>
+        <p class="feat-desc">深色 / 浅色不是换个壳——所有控件登记入主题注册表，切换时统一重绘。五个标签页：整理、查重、分析、规则、日志，快捷键齐全。</p>
+      </div>
+      <div class="feat reveal">
+        <span class="feat-no">05</span>
+        <h3 class="feat-name">命令行自动化<span class="en">CLI &amp; Cron</span></h3>
+        <p class="feat-desc">GUI 能做的 CLI 全能做：<code>organize / analyze / cleanup / rename / naming</code>。配 Windows 计划任务，每天下班前自动整理一次。</p>
+      </div>
+      <div class="feat reveal">
+        <span class="feat-no">06</span>
+        <h3 class="feat-name">安卓整理<span class="en">Android via ADB</span></h3>
+        <p class="feat-desc">手机连上电脑，<code>phone organize</code> 直接整理 /sdcard/Download；<code>phone backup</code> 把 DCIM 相册批量拉回电脑。同一套分类与命名规则。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 命名引擎 ═══════════ -->
+<section class="section" id="naming">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="sec-no">SEC.03</span>
+      <h2 class="sec-title">一个较真的命名引擎</h2>
+    </div>
+    <p class="sec-sub reveal" data-delay="1">文件名是整理工具最容易敷衍的地方。归序在这里修掉了真 bug，也立下了真规矩。</p>
+    <div class="naming-grid">
+      <div class="naming-card reveal">
+        <h3><span class="idx">A</span>数字前缀，位数对齐</h3>
+        <div class="diff">
+          <div class="bad">1_工作目录&nbsp;&nbsp;2_学习资料</div>
+          <div class="good">01_工作目录&nbsp;&nbsp;02_学习资料</div>
+        </div>
+        <p class="note">同批目录统一补齐到相同宽度，资源管理器里按名称排序即按用途排序。</p>
+      </div>
+      <div class="naming-card reveal" data-delay="1">
+        <h3><span class="idx">B</span>日期识别，不误判流水号</h3>
+        <div class="diff">
+          <div class="bad">订单20240512001.xlsx → 订单_20240512.xlsx</div>
+          <div class="good">订单20240512001.xlsx → 订单20240512001_20261021.xlsx</div>
+        </div>
+        <p class="note">数字边界 + 月日合法范围 + 年份 1970–2099 三重校验；日期来源可选文件名 / EXIF / 修改时间 / 创建时间。</p>
+      </div>
+      <div class="naming-card reveal" data-delay="1">
+        <h3><span class="idx">C</span>Windows 安全清洗</h3>
+        <div class="diff">
+          <div class="bad">报告 草案?.pdf</div>
+          <div class="good">报告 草案_20261021.pdf</div>
+        </div>
+        <p class="note">非法字符 <span class="mono">&lt;&gt;:"/\|?*</span> 替换、结尾点与空格剥离、保留设备名（CON/PRN/NUL/COM1）规避、全角转半角、超长截断且保住扩展名。</p>
+      </div>
+      <div class="naming-card reveal" data-delay="2">
+        <h3><span class="idx">D</span>冲突语义化 + 模板可配</h3>
+        <table class="tpl-table" aria-label="命名模板预设">
+          <tr><td>{name}_{date}</td><td>报告_20261021.pdf</td></tr>
+          <tr><td>{date}_{name}</td><td>20261021_报告.pdf</td></tr>
+          <tr><td>{category}_{name}_{date}</td><td>01_工作目录_报告_….pdf</td></tr>
+          <tr><td>冲突时</td><td>报告_v2_20261021.pdf</td></tr>
+        </table>
+        <p class="note">冲突标记从时间戳改为 <span class="mono">_v2 / _v3</span>，插在日期后缀之前；五种模板预设，GUI 与 CLI 均可切换。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 双端 ═══════════ -->
+<section class="section" id="platform">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="sec-no">SEC.04</span>
+      <h2 class="sec-title">PC 上的 GUI，手机上的 ADB</h2>
+    </div>
+    <p class="sec-sub reveal" data-delay="1">点右边的开关，亲眼看看「真正的双主题」——不是换一层皮，是每个控件都跟着换。</p>
+    <div class="platform-grid">
+      <div class="gui-mock reveal" data-delay="1">
+        <div class="gui-mock-bar">
+          <span class="tl" style="width:11px;height:11px;border-radius:50%;background:var(--faint);opacity:.5"></span>
+          <span class="mono" style="font-size:.72rem;color:var(--muted)">Ordina · 归序 — 整理</span>
+          <div class="theme-toggle" role="group" aria-label="主题预览切换">
+            <button type="button" id="themeDark" aria-pressed="true">深色</button>
+            <button type="button" id="themeLight" aria-pressed="false">浅色</button>
+          </div>
+        </div>
+        <div class="gui-canvas" id="guiCanvas" data-theme="dark" aria-hidden="true">
+          <div class="side"><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="main"><i></i><i></i><i></i><i></i><i></i></div>
+        </div>
+      </div>
+      <div class="adb-card reveal" data-delay="2">
+        <h3>安卓手机整理</h3>
+        <p>手机开启 USB 调试连上电脑，同一套分类与命名规则直接作用于手机存储。</p>
+        <ul class="adb-list">
+          <li><span class="k">devices</span>列出已连接的设备与状态</li>
+          <li><span class="k">organize</span>整理 /sdcard/Download，先预览再执行</li>
+          <li><span class="k">backup</span>把 DCIM 相册批量备份到电脑</li>
+          <li><span class="k">cleanup</span>清理临时文件与空目录</li>
+          <li><span class="k">diagnose</span>存储占用全面诊断报告</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ CLI ═══════════ -->
+<section class="section" id="cli">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="sec-no">SEC.05</span>
+      <h2 class="sec-title">终端里的一行事</h2>
+    </div>
+    <div class="terminal reveal" data-delay="1">
+      <div class="terminal-bar">
+        <span class="tl"></span><span class="tl"></span><span class="tl"></span>
+        <span class="mono" style="font-size:.72rem;color:var(--muted);margin-left:8px">powershell — ordina</span>
+        <button class="copy-btn" id="copyCmd" type="button" data-cmd="python -m ordina cli organize --path ~/Downloads">复制命令</button>
+      </div>
+      <div class="terminal-body">
+<pre><span class="prompt">PS&gt; </span><span class="cmd">python -m ordina cli organize --path ~/Downloads</span>
+<span class="out">[1/3] 检查重复文件...  <span class="hl">发现 2 组重复</span>
+[2/3] 分类文件...      7 个文件 → 6 个用途分类
+[3/3] 预览完毕，加 --execute 落盘</span>
+
+<span class="prompt">PS&gt; </span><span class="cmd">python -m ordina cli rename --path ~/Downloads --template "{date}_{name}"</span>
+<span class="out">报告 草案?.pdf  →  <span class="hl">20261021_报告 草案.pdf</span></span>
+
+<span class="prompt">PS&gt; </span><span class="cmd">python -m ordina cli phone backup --remote /sdcard/DCIM --local D:/backup</span>
+<span class="out">已连接 MI 6  ·  备份 1,204 张照片  →  D:/backup/2026-10</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 开始使用 ═══════════ -->
+<section class="section" id="start">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="sec-no">SEC.06</span>
+      <h2 class="sec-title">三十秒开始</h2>
+    </div>
+    <p class="sec-sub reveal" data-delay="1">没有安装向导，没有后台服务。克隆或下载源码，三种方式任选其一启动。</p>
+    <div class="start-grid">
+      <div class="start-card reveal">
+        <span class="step">WAY 01</span>
+        <h3>双击启动</h3>
+        <p>Windows 下双击项目根目录的启动脚本，直接进入图形界面。</p>
+        <code class="cmdline">launcher.bat</code>
+      </div>
+      <div class="start-card reveal" data-delay="1">
+        <span class="step">WAY 02</span>
+        <h3>模块启动 GUI</h3>
+        <p>在项目根目录执行，等价于启动脚本，适合习惯终端的人。</p>
+        <code class="cmdline">python -m ordina</code>
+      </div>
+      <div class="start-card reveal" data-delay="2">
+        <span class="step">WAY 03</span>
+        <h3>命令行模式</h3>
+        <p>全部功能无界面可用，配计划任务实现每日自动整理。</p>
+        <code class="cmdline">python -m ordina cli organize --path ~/Downloads</code>
+      </div>
+    </div>
+    <div class="sysreq reveal" data-delay="2">
+      <span><b>Python</b> 3.9+</span>
+      <span><b>GUI</b> 需 tkinter（官方安装包自带）</span>
+      <span><b>依赖</b> 纯标准库，pip 零安装</span>
+      <span><b>安卓功能</b> 需 ADB 环境</span>
+      <span><b>平台</b> Windows 为主，CLI 跨平台</span>
+    </div>
+  </div>
+</section>
+</main>
+
+<!-- ═══════════ FOOTER ═══════════ -->
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <p class="f-brand"><span class="mono">ORDINA</span>归序</p>
+    <p class="f-note">v3.0.0 — ordinare: to put in order · 本地工具 · 无遥测 · 标准库构建</p>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+  var reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ── 入场序列与滚动触发 ── */
+  var revealEls = document.querySelectorAll(".reveal");
+  if (reduceMotion || !("IntersectionObserver" in window)) {
+    revealEls.forEach(function (el) { el.classList.add("in"); });
+  } else {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+      });
+    }, { threshold: 0.12 });
+    revealEls.forEach(function (el) { io.observe(el); });
+  }
+
+  /* ── 跑马灯内容复制一份，实现无缝滚动 ── */
+  var track = document.getElementById("marqueeTrack");
+  track.appendChild(track.firstElementChild.cloneNode(true));
+
+  /* ── HERO 现场整理演示 ── */
+  var runBtn = document.getElementById("demoRun");
+  var logBox = document.getElementById("demoLog");
+  var files = Array.prototype.slice.call(document.querySelectorAll("#demoFiles .demo-file"));
+  var cats = document.querySelectorAll("#demoCats .demo-cat");
+  var running = false;
+
+  function logLine(html) {
+    var div = document.createElement("div");
+    div.innerHTML = html;
+    logBox.appendChild(div);
+    logBox.scrollTop = logBox.scrollHeight;
+  }
+
+  function resetDemo() {
+    files.forEach(function (f) { f.classList.remove("moved"); });
+    cats.forEach(function (c) {
+      c.classList.remove("hit");
+      c.querySelector(".cnt").textContent = "0";
+    });
+    logBox.innerHTML = '<div class="dim">$ ordina organize --dry-run <span class="dim"># 等待执行…</span></div>';
+  }
+
+  function runDemo() {
+    if (running) return;
+    running = true;
+    runBtn.disabled = true;
+    resetDemo();
+    logLine('<span class="dim">[1/3] 检查重复文件… 未发现重复</span>');
+    logLine('<span class="dim">[2/3] 按用途分类…</span>');
+
+    var step = reduceMotion ? 0 : 340;
+    files.forEach(function (file, i) {
+      setTimeout(function () {
+        file.classList.add("moved");
+        var cat = document.querySelector('#demoCats .demo-cat[data-cat="' + file.dataset.cat + '"]');
+        var cnt = cat.querySelector(".cnt");
+        cnt.textContent = String(parseInt(cnt.textContent, 10) + 1);
+        cat.classList.add("hit");
+        setTimeout(function () { cat.classList.remove("hit"); }, 900);
+        logLine('<span class="ok">[OK]</span> ' + file.textContent + ' → ' + cat.firstChild.textContent + '/');
+        if (i === files.length - 1) {
+          setTimeout(function () {
+            logLine('<span class="dim">[3/3] 预览完毕 — </span><span class="ok">7 个文件 · 6 个分类 · 0 冲突</span>');
+            runBtn.disabled = false;
+            runBtn.textContent = "↺ 重新演示";
+            running = false;
+          }, step);
+        }
+      }, 400 + i * step);
+    });
+  }
+  runBtn.addEventListener("click", runDemo);
+
+  /* ── 主题预览切换 ── */
+  var canvas = document.getElementById("guiCanvas");
+  var btnDark = document.getElementById("themeDark");
+  var btnLight = document.getElementById("themeLight");
+  function setTheme(name) {
+    canvas.dataset.theme = name;
+    btnDark.setAttribute("aria-pressed", String(name === "dark"));
+    btnLight.setAttribute("aria-pressed", String(name === "light"));
+  }
+  btnDark.addEventListener("click", function () { setTheme("dark"); });
+  btnLight.addEventListener("click", function () { setTheme("light"); });
+
+  /* ── 复制命令 ── */
+  var copyBtn = document.getElementById("copyCmd");
+  copyBtn.addEventListener("click", function () {
+    var text = copyBtn.dataset.cmd;
+    function done() {
+      copyBtn.textContent = "已复制 ✓";
+      setTimeout(function () { copyBtn.textContent = "复制命令"; }, 1600);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, done);
+    } else {
+      var ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch (e) {}
+      document.body.removeChild(ta); done();
+    }
+  });
+})();
+</script>
+</body>
+</html>

@@ -6,6 +6,10 @@ Ordina GUI 打包规格（图形界面，无控制台窗口）
     onedir  → dist/Ordina/Ordina.exe
     onefile → dist/Ordina.exe          （设环境变量 ORDINA_ONEFILE=1 时）
 
+压缩：
+    upx 参数由 build.ps1 探测后通过 --upx-dir 传入；找不到 UPX 时
+    PyInstaller 会自动跳过压缩，不影响构建。
+
 用法（一般由 build.bat / build.ps1 调用）：
     python -m PyInstaller --noconfirm --distpath dist --workpath build/gui packaging/ordina.spec
 """
@@ -16,7 +20,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(SPEC)))
 from spec_common import configure
 
-cfg = configure(SPEC, include_ui=True)
+cfg = configure(SPEC)
 ONEFILE = os.environ.get("ORDINA_ONEFILE") == "1"
 
 block_cipher = None
@@ -44,7 +48,8 @@ if ONEFILE:
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
-        upx=False,
+        upx=True,
+        upx_exclude=cfg["upx_exclude"],
         runtime_tmpdir=None,
         console=False,
         disable_windowed_traceback=False,
@@ -60,7 +65,8 @@ else:
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
-        upx=False,
+        upx=True,
+        upx_exclude=cfg["upx_exclude"],
         console=False,
         disable_windowed_traceback=False,
         icon=cfg["icon"],
@@ -69,6 +75,7 @@ else:
     coll = COLLECT(
         exe, a.binaries, a.zipfiles, a.datas,
         strip=False,
-        upx=False,
+        upx=True,
+        upx_exclude=cfg["upx_exclude"],
         name="Ordina",
     )

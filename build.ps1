@@ -1,36 +1,34 @@
 ﻿#requires -Version 5.1
 <#
 .SYNOPSIS
-    Ordina / 归序 — Windows 打包脚本
+    Ordina / 归序 — Windows 打包脚本（仅 GUI）
 
 .DESCRIPTION
-    用 PyInstaller 把 Ordina 打成两个可执行文件：
-      - Ordina.exe     图形界面（无控制台窗口）
-      - ordina-cli.exe 命令行（保留控制台，不打包 tkinter）
-    可选单文件 / 单目录模式，可选再压一份便携 ZIP。
+    用 PyInstaller 把 Ordina 打成 dist\Ordina\Ordina.exe（图形界面，无控制台窗口）。
+    可选单文件模式，可选 UPX 压缩，可选再压一份便携 ZIP。
+
+    构建环境优先级：项目 .venv  系统 Python  -Python 手动指定。
+    推荐用 .venv（干净、可复现）——系统 Python 里若装过 numpy / pandas 之类的
+    大包，有误被间接带入产物的风险。
 
 .EXAMPLE
     .\build.ps1
-        默认：单目录模式，GUI + CLI 都打
+        默认：单目录模式 + UPX 压缩
 
     .\build.ps1 -Mode onefile
         打成单个 exe（启动稍慢，但只有一个文件）
 
-    .\build.ps1 -Target cli
-        只打命令行版
+    .\build.ps1 -NoUpx
+        关闭 UPX 压缩（排查启动故障时用它）
 
     .\build.ps1 -Clean -Zip
         清空旧产物后重新打包，并额外产出便携 ZIP
 
 .NOTES
-    必须用带 tkinter 的 Python（python.org 官方安装包默认自带）打 GUI 版，
-    托管/嵌入式 Python 通常没有 tkinter，只能打 CLI 版。
+    必须用带 tkinter 的 Python（python.org 官方安装包默认自带）。
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'gui', 'cli')]
-    [string]$Target = 'all',
-
     [ValidateSet('onedir', 'onefile')]
     [string]$Mode = 'onedir',
 
@@ -39,6 +37,12 @@ param(
 
     # 额外产出 dist\Ordina-v<版本>-win64.zip 便携包
     [switch]$Zip,
+
+    # 关闭 UPX 压缩
+    [switch]$NoUpx,
+
+    # UPX 所在目录（内含 upx.exe）；默认自动探测，本机为 H:\upx
+    [string]$UpxDir = '',
 
     # 手动指定 Python 解释器路径
     [string]$Python = ''
@@ -63,59 +67,91 @@ Write-Host '  Ordina / 归序 — 打包脚本' -ForegroundColor Yellow
 Write-Host '  ──────────────────────────────────────────' -ForegroundColor DarkGray
 
 # ─────────────────────── 1. 选择解释器 ───────────────────────
-Write-Step '检查 Python 环境'
-
-$needTk = ($Target -ne 'cli')   # 只有打 GUI 时才需要 tkinter
+Write-Step '检查构建环境'
 
 function Test-Python {
-    param([string]$Exe, [bool]$NeedTk)
+    param([string]$Exe)
     if ([string]::IsNullOrWhiteSpace($Exe)) { return $false }
     if (-not (Test-Path $Exe)) { return $false }
-    $probe = if ($NeedTk) { 'import sys, tkinter, PyInstaller' } else { 'import sys, PyInstaller' }
+    $probe = 'import sys, tkinter, PyInstaller'
     try {
         & $Exe -c $probe 2>$null | Out-Null
         return ($LASTEXITCODE -eq 0)
-    } catch {
-        return $false
-    }
+    } catch { return $false }
 }
 
 $candidates = New-Object System.Collections.ArrayList
 if ($Python) { [void]$candidates.Add($Python) }
+# 项目专属虚拟环境优先：干净、可复现
+[void]$candidates.Add((Join-Path $Root '.venv\Scripts\python.exe'))
 $cmd = Get-Command python -ErrorAction SilentlyContinue
 if ($cmd) { [void]$candidates.Add($cmd.Source) }
-[void]$candidates.Add((Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'))
-[void]$candidates.Add((Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313\python.exe'))
-[void]$candidates.Add('C:\Python312\python.exe')
-[void]$candidates.Add('C:\Python313\python.exe')
+foreach ($v in 'Python312', 'Python313', 'Python311') {
+    [void]$candidates.Add((Join-Path $env:LOCALAPPDATA "Programs\Python\$v\python.exe"))
+}
 
 $Py = $null
+$VenvPy = Join-Path $Root '.venv\Scripts\python.exe'
 foreach ($c in $candidates) {
-    if (Test-Python -Exe $c -NeedTk $needTk) { $Py = $c; break }
+    if (Test-Python -Exe $c) { $Py = $c; break }
 }
 
 if (-not $Py) {
     Write-Host ''
-    Write-Host '    没有找到可用的 Python，需要满足：' -ForegroundColor Yellow
+    Write-Host '    没有找到可用的 Python，需要同时满足：' -ForegroundColor Yellow
     Write-Host '      1) 已安装 PyInstaller    :  pip install pyinstaller' -ForegroundColor Yellow
-    if ($needTk) {
-        Write-Host '      2) 带 tkinter（打 GUI 必需，python.org 官方安装包自带）' -ForegroundColor Yellow
-    }
+    Write-Host '      2) 带 tkinter（GUI 必需，python.org 官方安装包自带）' -ForegroundColor Yellow
     Write-Host ''
-    Write-Host '    也可以用 -Python 手动指定，例如：' -ForegroundColor Yellow
-    Write-Host '      .\build.ps1 -Python "C:\Path\To\python.exe"' -ForegroundColor Yellow
+    Write-Host '    建议先建一个干净的构建环境：' -ForegroundColor Yellow
+    Write-Host '      python -m venv .venv' -ForegroundColor Yellow
+    Write-Host '      .venv\Scripts\pip install pyinstaller' -ForegroundColor Yellow
     Stop-Build 'Python 环境不满足打包要求'
 }
 
 $pyVer = (& $Py -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])').Trim()
-Write-Ok "使用解释器: $Py  (Python $pyVer)"
+$fromVenv = ($Py -eq $VenvPy)
+$pyNote = if ($fromVenv) { '(项目 .venv)' } else { '(系统解释器，建议改用 .venv)' }
+Write-Ok "解释器: $Py  Python $pyVer $pyNote"
+if (-not $fromVenv) {
+    Write-Warn '未在 .venv 中构建：系统环境的第三方包有误打包风险'
+}
 
 # ───────────────────────── 2. 读取版本 ─────────────────────────
 $version = (& $Py -c "import sys; sys.path.insert(0, r'$Root'); import ordina; print(ordina.__version__)").Trim()
 if (-not $version) { Stop-Build '无法从 ordina/__init__.py 读取版本号' }
 Write-Ok "项目版本: v$version"
 
-# ───────────────────────── 3. 清理旧产物 ─────────────────────────
+# ───────────────────────── 3. UPX 探测 ─────────────────────────
+$upxArgs = @()
+if ($NoUpx) {
+    Write-Info 'UPX: 已按 -NoUpx 关闭'
+} else {
+    $upxExe = 'upx.exe'
+    $found = ''
+    $search = @()
+    if ($UpxDir) { $search += $UpxDir }
+    $search += @('H:\upx', 'C:\upx', 'C:\Program Files\upx', 'C:\tools\upx')
+    # PATH 兜底
+    foreach ($d in ($env:PATH -split ';')) {
+        $d = $d.Trim().Trim('"')
+        if ($d) { $search += $d }
+    }
+    foreach ($d in $search) {
+        if ($d -and (Test-Path (Join-Path $d $upxExe))) { $found = $d; break }
+    }
+
+    if ($found) {
+        $uv = (& (Join-Path $found $upxExe) --version 2>$null | Select-Object -First 1)
+        $uv = ($uv -replace '^upx\s+', '').Trim()
+        Write-Ok "UPX: $found  (v$uv)"
+        $upxArgs = @('--upx-dir', $found)
+    } else {
+        Write-Warn '未找到 UPX，跳过压缩（产物会明显更大）'
+        Write-Info '可手动指定：.\build.ps1 -UpxDir "D:\path\to\upx"'
+    }
+}
+
+# ───────────────────────── 4. 清理旧产物 ─────────────────────────
 if ($Clean) {
     Write-Step '清理旧产物'
     Remove-Item -Recurse -Force $BuildPath -ErrorAction SilentlyContinue
@@ -124,69 +160,62 @@ if ($Clean) {
 }
 $cleanFlag = if ($Clean) { @('--clean') } else { @() }
 $env:ORDINA_ONEFILE = if ($Mode -eq 'onefile') { '1' } else { '0' }
-Write-Info "打包模式: $Mode   (目标: $Target)"
+Write-Info "打包模式: $Mode"
 
-# ───────────────────────── 4. 执行打包 ─────────────────────────
-function Invoke-PyInstaller {
-    param([string]$Name, [string]$SpecFile)
+# ───────────────────────── 5. 执行打包 ─────────────────────────
+Write-Step '打包 GUI'
+$specPath = Join-Path $Packaging 'ordina.spec'
+if (-not (Test-Path $specPath)) { Stop-Build "找不到 spec 文件: $specPath" }
 
-    $specPath = Join-Path $Packaging $SpecFile
-    if (-not (Test-Path $specPath)) { Stop-Build "找不到 spec 文件: $specPath" }
+$work = Join-Path $BuildPath 'gui'
+# 注意：调用的是原生命令（python.exe），参数要用数组变量直接展开（$cleanFlag / $upxArgs）；
+#      @cleanFlag 是 PowerShell 命令的 splatting 语法，在 5.1 里传给原生命令会解析失败。
+& $Py -m PyInstaller --noconfirm $cleanFlag $upxArgs --log-level WARN `
+    --distpath $DistPath --workpath $work $specPath
 
-    Write-Step "打包 $Name"
-    $work = Join-Path $BuildPath $Name
-    # 注意：调用的是原生命令（python.exe），参数要用数组变量直接展开（$cleanFlag）；
-    #       @cleanFlag 是 PowerShell 命令的 splatting 语法，在 5.1 里传给原生命令会解析失败。
-    & $Py -m PyInstaller --noconfirm $cleanFlag --log-level WARN `
-        --distpath $DistPath --workpath $work $specPath
+if ($LASTEXITCODE -ne 0) { Stop-Build "打包失败（退出码 $LASTEXITCODE）" }
+Write-Ok '打包完成'
 
-    if ($LASTEXITCODE -ne 0) { Stop-Build "$Name 打包失败（退出码 $LASTEXITCODE）" }
-    Write-Ok "$Name 打包完成"
-}
-
-if ($Target -eq 'all' -or $Target -eq 'gui') { Invoke-PyInstaller -Name 'gui' -SpecFile 'ordina.spec' }
-if ($Target -eq 'all' -or $Target -eq 'cli') { Invoke-PyInstaller -Name 'cli' -SpecFile 'ordina-cli.spec' }
-
-# ───────────────────────── 5. 产物校验 ─────────────────────────
+# ───────────────────────── 6. 产物校验 ─────────────────────────
 Write-Step '校验产物'
 
 if ($Mode -eq 'onefile') {
     $guiExe = Join-Path $DistPath 'Ordina.exe'
-    $cliExe = Join-Path $DistPath 'ordina-cli.exe'
+    $outDir = $DistPath
 } else {
     $guiExe = Join-Path $DistPath 'Ordina\Ordina.exe'
-    $cliExe = Join-Path $DistPath 'Ordina-cli\ordina-cli.exe'
+    $outDir = Join-Path $DistPath 'Ordina'
 }
 
-$built = @()
-if (($Target -eq 'all' -or $Target -eq 'gui') -and (Test-Path $guiExe)) {
-    $size = [math]::Round((Get-Item $guiExe).Length / 1MB, 1)
-    Write-Ok "GUI  $guiExe  ($size MB)"
-    $built += $guiExe
-} elseif ($Target -eq 'gui') {
-    Stop-Build "未找到 GUI 产物: $guiExe"
+if (-not (Test-Path $guiExe)) { Stop-Build "未找到产物: $guiExe" }
+
+$exeSize = [math]::Round((Get-Item $guiExe).Length / 1MB, 2)
+$dirSize = if ($Mode -eq 'onefile') { $exeSize } else {
+    [math]::Round((Get-ChildItem $outDir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)
+}
+Write-Ok "主程序: $guiExe  ($exeSize MB)"
+Write-Ok "目录合计: $dirSize MB"
+
+# 版本资源
+$vi = (Get-Item $guiExe).VersionInfo
+Write-Info "版本资源: $($vi.ProductName) $($vi.FileVersion)"
+
+# ───────────────────── 7. GUI 冒烟测试（启动 4 秒后关闭） ─────────────────────
+Write-Step '运行 GUI 冒烟测试'
+$proc = Start-Process -FilePath $guiExe -PassThru
+Start-Sleep -Seconds 4
+$alive = -not $proc.HasExited
+$title = $proc.MainWindowTitle
+$mem = [math]::Round($proc.WorkingSet64 / 1MB, 1)
+Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+
+if ($alive -and $title) {
+    Write-Ok "窗口已创建: 「$title」  内存 $mem MB"
+} else {
+    Write-Warn "GUI 启动异常（存活=$alive，标题='$title'）—— 可加 -NoUpx 重打排查"
 }
 
-if (($Target -eq 'all' -or $Target -eq 'cli') -and (Test-Path $cliExe)) {
-    $size = [math]::Round((Get-Item $cliExe).Length / 1MB, 1)
-    Write-Ok "CLI  $cliExe  ($size MB)"
-    $built += $cliExe
-} elseif ($Target -eq 'cli') {
-    Stop-Build "未找到 CLI 产物: $cliExe"
-}
-
-# ───────────────────── 6. CLI 冒烟测试（秒级） ─────────────────────
-if (Test-Path $cliExe) {
-    Write-Step '运行 CLI 冒烟测试'
-    $out = & $cliExe version 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        Write-Ok ("ordina-cli.exe version → " + ($out -join ' '))
-    } else {
-        Write-Warn "CLI 冒烟测试未通过: $($out -join ' ')"
-    }
-}
-
-# ───────────────────────── 7. 便携 ZIP ─────────────────────────
+# ───────────────────────── 8. 便携 ZIP ─────────────────────────
 if ($Zip) {
     Write-Step '生成便携 ZIP'
     $stage = Join-Path $DistPath "Ordina-v$version-win64"
@@ -194,15 +223,9 @@ if ($Zip) {
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
 
     if ($Mode -eq 'onefile') {
-        Copy-Item $guiExe $stage -ErrorAction SilentlyContinue
-        Copy-Item $cliExe $stage -ErrorAction SilentlyContinue
+        Copy-Item $guiExe $stage -Force
     } else {
-        if (Test-Path (Join-Path $DistPath 'Ordina')) {
-            Copy-Item (Join-Path $DistPath 'Ordina') $stage -Recurse -Force
-        }
-        if (Test-Path (Join-Path $DistPath 'Ordina-cli')) {
-            Copy-Item (Join-Path $DistPath 'Ordina-cli') $stage -Recurse -Force
-        }
+        Copy-Item $outDir $stage -Recurse -Force
     }
 
     # 说明文档（文件名保持 ASCII，压缩包内不出现编码问题）
@@ -224,11 +247,11 @@ if ($Zip) {
 Write-Host ''
 Write-Host '  ──────────────────────────────────────────' -ForegroundColor DarkGray
 Write-Host "  打包完成 v$version  ($Mode)" -ForegroundColor Green
-Write-Host "  产物目录: $DistPath" -ForegroundColor White
+Write-Host "  产物: $guiExe" -ForegroundColor White
 Write-Host ''
 Write-Host '  下一步:' -ForegroundColor Cyan
-Write-Host '    · GUI：双击 Ordina.exe（首次启动可能被 SmartScreen 拦截，选"仍要运行"）' -ForegroundColor White
-Write-Host '    · CLI：ordina-cli.exe organize --path %USERPROFILE%\Downloads' -ForegroundColor White
+Write-Host '    · 双击 Ordina.exe 启动（首次可能被 SmartScreen 拦截，选"仍要运行"）' -ForegroundColor White
+Write-Host '    · 命令行用法仍可用源码：python -m ordina cli organize --path ...' -ForegroundColor White
 if (-not $Zip) {
     Write-Host '    · 想要压缩包：.\build.ps1 -Zip' -ForegroundColor White
 }
